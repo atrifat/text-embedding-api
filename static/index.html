@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Text Embedding API</title>
+  </head>
+  <body>
+    <h1>Text Embedding API</h1>
+    <p>
+      A simple Text Embedding API using FastAPI and Hugging Face Transformers.
+    </p>
+    <p>
+      Use this API to get text embeddings using various supported model from
+      Hugging Face Transformers.
+    </p>
+    <h2>Endpoints</h2>
+    <ul>
+      <li><a href="/docs">API Documentation</a></li>
+    </ul>
+    <h2>Example Request</h2>
+    <pre>
+curl -X POST "http://localhost:7860/v1/embeddings" -H "Content-Type: application/json" -d '{"input": "Hello, world!"}'
+    </pre>
+    <h2>Example Response</h2>
+    <pre>
+{"data":[{"object":"embedding","embedding":[-0.06830555200576782, ... ,0.06830555200576782],"index":0}],"model":"text-embedding-3-large","object":"list","usage":{"prompt_tokens":6,"total_tokens":6}}
+    </pre>
+  </body>
+</html>
