@@ -1,0 +1,16 @@
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg
+*.egg-info
+*.whl
+*.dist-info
+
+.env
+.git
+.gitignore
+.vscode/
