@@ -8,3 +8,7 @@ pytest==8.3.5
 torch==2.7.0
 transformers==4.51.3
 uvicorn==0.34.2
+pre-commit==4.2.0
+flake8==7.2.0
+black==25.1.0
+isort==6.0.1
