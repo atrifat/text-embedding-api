@@ -208,6 +208,42 @@ The following models are configured in `models_config.py`. Please note that whil
 pytest
 ```
 
+### Local Development Checks (Pre-commit Hooks)
+
+To ensure code quality, formatting, and test integrity before committing, this project uses `pre-commit` hooks. These hooks run automatically on your staged files before each commit.
+
+1.  **Install `pre-commit` and project dependencies**:
+    Ensure you have a virtual environment activated, then install the development dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2.  **Install the Git hooks**:
+    Navigate to the project's root directory and run:
+    ```bash
+    pre-commit install
+    ```
+    This command sets up the Git hooks based on the configuration in [`pre-commit-config.yaml`](.pre-commit-config.yaml).
+
+Once installed, `pre-commit` will automatically run checks (linting, formatting, testing) on your staged changes before a commit is finalized. If any checks fail, the commit will be aborted, allowing you to fix issues immediately.
+
+To manually run all pre-commit checks on your entire codebase at any time, use:
+```bash
+pre-commit run --all-files
+```
+
+## Continuous Integration
+
+This project uses GitHub Actions for continuous integration. The CI pipeline automatically runs checks on every push and pull request to the `main` branch to ensure code quality, functionality, and security.
+
+The CI workflow is defined in [`python-ci.yml`](.github/workflows/python-ci.yml) and includes the following steps:
+
+*   **Environment Setup**: Configures multiple Python versions (3.8 to 3.12).
+*   **Dependency Installation**: Installs project dependencies, linters, and testing tools.
+*   **Linting**: Runs `flake8` to enforce code style and identify errors.
+*   **Testing**: Executes unit and integration tests using `pytest` and generates a code coverage report.
+*   **Security Scan**: Performs a security audit of project dependencies using `pip-audit`.
+
 ## License
 
 This project is licensed under the MIT License. See the [`LICENSE`](LICENSE) file for details.
