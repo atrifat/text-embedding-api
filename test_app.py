@@ -1,14 +1,15 @@
-import pytest
-from fastapi.testclient import TestClient
-import app
-from unittest import mock
-import os
-import importlib
-import torch
 import hashlib
-import models_config
+import importlib
+import os
+from unittest import mock
+
+import pytest
+import torch
 from cachetools import LRUCache
-from transformers import AutoTokenizer
+from fastapi.testclient import TestClient
+
+import app
+import models_config
 from app import get_app_settings
 
 client = TestClient(app.app)
@@ -31,9 +32,7 @@ def _reload_app_and_client():
     app.embeddings_cache.clear()
 
 
-def _assert_embedding_response_structure(
-    response_data, expected_num_embeddings, model_name
-):
+def _assert_embedding_response_structure(response_data, expected_num_embeddings, model_name):
     """
     Helper function to assert the common structure and content of embedding API responses.
     """
@@ -50,10 +49,7 @@ def _assert_embedding_response_structure(
     assert "prompt_tokens" in response_data["usage"]
     assert "total_tokens" in response_data["usage"]
     assert response_data["usage"]["prompt_tokens"] > 0
-    assert (
-        response_data["usage"]["total_tokens"]
-        == response_data["usage"]["prompt_tokens"]
-    )
+    assert response_data["usage"]["total_tokens"] == response_data["usage"]["prompt_tokens"]
 
 
 @pytest.fixture(autouse=True)
@@ -85,9 +81,7 @@ def mock_model_loading():
             """A mock class that behaves like transformers.tokenization_utils_base.BatchEncoding."""
 
             def __init__(self, input_ids, attention_mask):
-                super().__init__(
-                    {"input_ids": input_ids, "attention_mask": attention_mask}
-                )
+                super().__init__({"input_ids": input_ids, "attention_mask": attention_mask})
                 self.input_ids = input_ids
                 self.attention_mask = attention_mask
 
@@ -103,9 +97,7 @@ def mock_model_loading():
             num_texts = len(texts) if isinstance(texts, list) else 1
 
             if OOM_TRIGGER_TEXT in texts:
-                input_ids = torch.full(
-                    (num_texts, 3), 999, dtype=torch.long
-                )  # Use 999 as a signal
+                input_ids = torch.full((num_texts, 3), 999, dtype=torch.long)  # Use 999 as a signal
             else:
                 input_ids = torch.full((num_texts, 3), 1, dtype=torch.long)
 
@@ -126,9 +118,7 @@ def mock_model_loading():
             batch_size = input_ids.size(0)
             mock_output = mock.MagicMock()
             # Use the dimension stored on the mock_model instance
-            mock_output.last_hidden_state = torch.randn(
-                batch_size, 10, mock_model.dimension
-            )
+            mock_output.last_hidden_state = torch.randn(batch_size, 10, mock_model.dimension)
             return mock_output
 
         mock_model.side_effect = mock_model_call_side_effect

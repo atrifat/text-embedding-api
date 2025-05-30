@@ -1,40 +1,37 @@
+import asyncio
+import hashlib
+import logging
 import os
 import time
-import logging
-from typing import List, Union, Tuple
-from cachetools import LRUCache
-import hashlib
-import asyncio
-from functools import lru_cache
 from contextlib import asynccontextmanager
+from functools import lru_cache
+from typing import List, Tuple, Union
 
-os.environ["TOKENIZERS_PARALLELISM"] = (
-    "false"  # Suppress a common warning from Hugging Face Tokenizers when processes are forked, which can occur in web servers like FastAPI. This prevents potential deadlocks or runtime warnings.
-)
-
-logging.basicConfig(
-    level=(
-        logging.DEBUG if os.environ.get("ENVIRONMENT") != "production" else logging.INFO
-    ),
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, field_validator, ConfigDict  # Import ConfigDict
-from pydantic_settings import BaseSettings
-from transformers import AutoModel, AutoTokenizer
 import torch
 import torch.nn.functional as F
 import uvicorn
+from cachetools import LRUCache
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, field_validator  # Import ConfigDict
+from pydantic_settings import BaseSettings
 from starlette import status
+from transformers import AutoModel, AutoTokenizer
 
+from models_config import CANONICAL_MODELS, MODEL_ALIASES, MODELS, get_model_config
 
-from models_config import MODELS, get_model_config, CANONICAL_MODELS, MODEL_ALIASES
+# Suppress a common warning from Hugging Face Tokenizers when processes are forked,
+# which can occur in web servers like FastAPI. This prevents potential deadlocks or runtime warnings.
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+logging.basicConfig(
+    level=(logging.DEBUG if os.environ.get("ENVIRONMENT") != "production" else logging.INFO),
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class AppSettings(BaseSettings):
@@ -95,7 +92,10 @@ class AppSettings(BaseSettings):
     allowed_origins: List[str] = Field(
         ["*"],
         json_schema_extra={"env": "ALLOWED_ORIGINS"},
-        description="List of allowed origins for CORS. Use comma-separated values in .env (e.g., 'http://localhost:3000,https://example.com').",
+        description=(
+            "List of allowed origins for CORS. Use comma-separated values in .env "
+            "(e.g., 'http://localhost:3000,https://example.com')."
+        ),
     )
 
     model_config = ConfigDict(env_file=".env")  # Use ConfigDict instead of class Config
@@ -122,16 +122,12 @@ async def lifespan(app: FastAPI):
     settings = get_app_settings()
     global embeddings_cache
     embeddings_cache = LRUCache(maxsize=settings.embeddings_cache_maxsize)
-    logger.info(
-        f"Embeddings cache initialized with max size: {settings.embeddings_cache_maxsize}"
-    )
+    logger.info(f"Embeddings cache initialized with max size: {settings.embeddings_cache_maxsize}")
 
     default_model = settings.default_model
     if default_model not in MODELS:
         logger.error(f"Default model '{default_model}' is not configured in MODELS.")
-        raise ValueError(
-            f"Default model '{default_model}' is not configured in MODELS."
-        )
+        raise ValueError(f"Default model '{default_model}' is not configured in MODELS.")
     if settings.warmup_enabled:
         logger.info(f"Warming up default model: {default_model}...")
         try:
@@ -191,19 +187,18 @@ async def load_model(model_name: str):
             logger.info(f"Loading model: {canonical_hf_model_name}")
             model_path = config["name"]
             trust_remote = config.get("requires_remote_code", False)
-            # `trust_remote_code=True` is required for some models (e.g., 'gte-multilingual-base', 'nomic-embed-text-v1.5')
-            # because they use custom code (e.g., custom AutoModel implementations) that is not part of the
-            # standard Hugging Face Transformers library. This flag allows the library to load and execute
-            # that custom code from the model's repository.
+            # `trust_remote_code=True` is required for some models (e.g., 'gte-multilingual-base',
+            # 'nomic-embed-text-v1.5')
+            # because they use custom code (e.g., custom AutoModel implementations) that is not part of the standard
+            # Hugging Face Transformers library. This flag allows the library to load and execute that custom code
+            # from the model's repository.
 
             model_cache[canonical_hf_model_name] = AutoModel.from_pretrained(
                 model_path, trust_remote_code=trust_remote
             ).to(DEVICE)
             model_cache[canonical_hf_model_name].eval()
 
-            tokenizer_cache[canonical_hf_model_name] = AutoTokenizer.from_pretrained(
-                model_path
-            )
+            tokenizer_cache[canonical_hf_model_name] = AutoTokenizer.from_pretrained(model_path)
             logger.info(f"Model loaded: {canonical_hf_model_name}")
         return (
             model_cache[canonical_hf_model_name],
@@ -228,7 +223,10 @@ class EmbeddingRequest(BaseModel):
     )
     model: str = Field(
         "text-embedding-3-large",
-        description="The name of the model to use for embedding. Supports both original model names and OpenAI-compatible names.",
+        description=(
+            "The name of the model to use for embedding. Supports both original model names "
+            "and OpenAI-compatible names."
+        ),
         json_schema_extra={"example": "text-embedding-3-large"},
     )
     encoding_format: str = Field(
@@ -318,11 +316,7 @@ def _process_texts_for_cache_and_batching(
         cache_key = (text_hash, canonical_hf_model_name)
 
         # Access embeddings_cache only if it's not None
-        if (
-            settings.embeddings_cache_enabled
-            and embeddings_cache is not None
-            and cache_key in embeddings_cache
-        ):
+        if settings.embeddings_cache_enabled and embeddings_cache is not None and cache_key in embeddings_cache:
             cached_embedding, cached_tokens = embeddings_cache[cache_key]
             final_ordered_embeddings[i] = cached_embedding.unsqueeze(0)
             if settings.report_cached_tokens:
@@ -379,13 +373,9 @@ def _perform_model_inference(
             return_tensors="pt",
         )
 
-        individual_tokens_in_batch = [
-            int(torch.sum(mask).item()) for mask in batch_dict["attention_mask"]
-        ]
+        individual_tokens_in_batch = [int(torch.sum(mask).item()) for mask in batch_dict["attention_mask"]]
 
-        prompt_tokens_current_batch = int(
-            torch.sum(batch_dict["attention_mask"]).item()
-        )
+        prompt_tokens_current_batch = int(torch.sum(batch_dict["attention_mask"]).item())
 
         batch_dict = {k: v.to(DEVICE) for k, v in batch_dict.items()}
 
@@ -479,21 +469,17 @@ async def get_embeddings_batch(
     if texts_to_process_in_model:
         for i in range(0, len(texts_to_process_in_model), max_batch_size):
             batch_texts = texts_to_process_in_model[i : i + max_batch_size]
-            batch_original_indices = original_indices_for_model_output[
-                i : i + max_batch_size
-            ]
+            batch_original_indices = original_indices_for_model_output[i : i + max_batch_size]
 
             texts_to_tokenize = _apply_instruction_prefix(batch_texts, config)
 
-            embeddings, individual_tokens_in_batch, prompt_tokens_current_batch = (
-                _perform_model_inference(
-                    texts_to_tokenize,
-                    model,
-                    tokenizer,
-                    model_max_tokens,
-                    model_dimension,
-                    settings,
-                )
+            embeddings, individual_tokens_in_batch, prompt_tokens_current_batch = _perform_model_inference(
+                texts_to_tokenize,
+                model,
+                tokenizer,
+                model_max_tokens,
+                model_dimension,
+                settings,
             )
 
             total_prompt_tokens += prompt_tokens_current_batch
@@ -508,9 +494,7 @@ async def get_embeddings_batch(
                 settings,
             )
 
-    final_embeddings_tensor = torch.cat(
-        [e for e in final_ordered_embeddings if e is not None], dim=0
-    )
+    final_embeddings_tensor = torch.cat([e for e in final_ordered_embeddings if e is not None], dim=0)
     return final_embeddings_tensor, total_prompt_tokens
 
 
@@ -561,15 +545,9 @@ async def get_model(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
 
-@app.post(
-    "/api/embed", response_model=EmbeddingResponse
-)  # Route for compatibility with Ollama's API
-@app.post(
-    "/v1/embeddings", response_model=EmbeddingResponse
-)  # Route for compatibility with OpenAI's API
-async def create_embeddings(
-    request: EmbeddingRequest, settings: AppSettings = Depends(get_app_settings)
-):
+@app.post("/api/embed", response_model=EmbeddingResponse)  # Route for compatibility with Ollama's API
+@app.post("/v1/embeddings", response_model=EmbeddingResponse)  # Route for compatibility with OpenAI's API
+async def create_embeddings(request: EmbeddingRequest, settings: AppSettings = Depends(get_app_settings)):
     """
     Generates embeddings for the given input text(s) using batch processing.
     Compatible with OpenAI's Embeddings API format.
@@ -592,14 +570,9 @@ async def create_embeddings(
                 usage={"prompt_tokens": 0, "total_tokens": 0},
             )
 
-        embeddings_tensor, total_tokens = await get_embeddings_batch(
-            texts, request.model, settings
-        )
+        embeddings_tensor, total_tokens = await get_embeddings_batch(texts, request.model, settings)
 
-        data = [
-            EmbeddingObject(embedding=embeddings_tensor[i].tolist(), index=i)
-            for i in range(len(texts))
-        ]
+        data = [EmbeddingObject(embedding=embeddings_tensor[i].tolist(), index=i) for i in range(len(texts))]
 
         usage = {
             "prompt_tokens": total_tokens,
@@ -615,9 +588,7 @@ async def create_embeddings(
                 f"Model: {request.model}. Tokens: {total_tokens}."
             )
 
-        return EmbeddingResponse(
-            data=data, model=request.model, object="list", usage=usage
-        )
+        return EmbeddingResponse(data=data, model=request.model, object="list", usage=usage)
 
     except ValueError as e:
         logger.error(f"Validation error in /v1/embeddings: {e}", exc_info=True)

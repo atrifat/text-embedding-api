@@ -47,9 +47,7 @@ MODEL_ALIASES = {
 # It combines canonical names and aliases for easy lookup.
 MODELS = {
     **CANONICAL_MODELS,
-    **{
-        alias: CANONICAL_MODELS[canonical] for alias, canonical in MODEL_ALIASES.items()
-    },
+    **{alias: CANONICAL_MODELS[canonical] for alias, canonical in MODEL_ALIASES.items()},
 }
 
 
@@ -61,8 +59,6 @@ def get_model_config(requested_model_name: str) -> dict:
     canonical_name = MODEL_ALIASES.get(requested_model_name, requested_model_name)
 
     if canonical_name not in CANONICAL_MODELS:
-        raise ValueError(
-            f"Model '{requested_model_name}' (canonical: '{canonical_name}') is not a recognized model."
-        )
+        raise ValueError(f"Model '{requested_model_name}' (canonical: '{canonical_name}') is not a recognized model.")
 
     return CANONICAL_MODELS[canonical_name]
