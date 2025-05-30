@@ -1,4 +1,7 @@
 # Text Embedding API Server
+[![Python CI](https://github.com/atrifat/text-embedding-api/actions/workflows/python-ci.yml/badge.svg)](https://github.com/atrifat/text-embedding-api/actions/workflows/python-ci.yml)
+![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)
+[![codecov](https://codecov.io/gh/atrifat/text-embedding-api/branch/main/graph/badge.svg)](https://codecov.io/gh/atrifat/text-embedding-api)
 
 A Text Embedding API server built with FastAPI and Hugging Face Transformers, designed to be compatible with OpenAI's Embeddings API format.
 
