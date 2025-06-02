@@ -15,18 +15,26 @@ A Text Embedding API server built with FastAPI and Hugging Face Transformers, de
 
 ## Architecture Overview
 
-The application is structured around a FastAPI server (`app.py`) that provides endpoints for generating text embeddings and listing available models. Model configurations and aliases are managed in `models_config.py`.
+The application is structured around a FastAPI server (`app.py`) that provides endpoints for generating text embeddings and listing available models. The core logic is distributed across several modules for better organization and maintainability.
 
 ### Key Components:
 
 - **`app.py`**:
   - Initializes the FastAPI application, CORS middleware, and static file serving.
-  - Manages application settings via `AppSettings` (Pydantic BaseSettings).
   - Handles application lifecycle events (startup/shutdown) for cache initialization and model warmup.
-  - Includes `load_model` for asynchronous model and tokenizer loading with caching.
-  - Contains the core `get_embeddings_batch` function for generating embeddings, incorporating caching, batching, and error handling.
   - Defines Pydantic models for API request and response validation.
   - Exposes API endpoints: `/`, `/v1/models`, `/v1/models/{model_id}`, `/api/embed`, and `/v1/embeddings`.
+- **`config.py`**:
+  - Centralizes application settings using Pydantic's `BaseSettings`, including host, port, model defaults, cache sizes, and CORS origins.
+- **`model_loader.py`**:
+  - Encapsulates the logic for loading Hugging Face models and tokenizers.
+  - Manages in-memory caches for loaded models and tokenizers to optimize performance.
+  - Handles device placement (CPU/GPU) for models.
+- **`embedding_processor.py`**:
+  - Contains the core logic for generating text embeddings.
+  - Implements caching for generated embeddings to avoid redundant computations.
+  - Handles batch processing of texts and applies instruction prefixes as required by specific models.
+  - Includes error handling for issues like CUDA Out of Memory.
 - **`models_config.py`**:
   - Defines `CANONICAL_MODELS` with detailed configurations (dimension, max tokens, instruction prefixes) for each supported Hugging Face model.
   - Defines `MODEL_ALIASES` to map common names to canonical model names.
