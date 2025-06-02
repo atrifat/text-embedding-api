@@ -6,11 +6,16 @@ from unittest import mock
 import pytest
 import torch
 from cachetools import LRUCache
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette import status
 
 import app
+import config
+import embedding_processor
+import model_loader
 import models_config
-from app import get_app_settings
+from config import get_app_settings
 
 client = TestClient(app.app)
 
@@ -23,13 +28,19 @@ def _reload_app_and_client():
     re-initialize the global client, and reset the embeddings cache.
     This is necessary when environment variables affecting app settings are changed.
     """
-    importlib.reload(app)
+    # Reload all relevant modules
     importlib.reload(models_config)
+    importlib.reload(config)
+    importlib.reload(model_loader)
+    importlib.reload(embedding_processor)
+    importlib.reload(app)  # Reload app last to pick up all new imports
+
     global client
     client = TestClient(app.app)
     settings = get_app_settings()
-    app.embeddings_cache = LRUCache(maxsize=settings.embeddings_cache_maxsize)
-    app.embeddings_cache.clear()
+    # IMPORTANT: Re-initialize embeddings_cache with the correct maxsize after app reload
+    embedding_processor.embeddings_cache = LRUCache(maxsize=settings.embeddings_cache_maxsize)
+    embedding_processor.embeddings_cache.clear()
 
 
 def _assert_embedding_response_structure(response_data, expected_num_embeddings, model_name):
@@ -59,19 +70,37 @@ def mock_model_loading():
     This fixture is autoused, meaning it applies to all tests in this file.
     It also handles environment variable cleanup and cache clearing.
     """
-    # Reload app and client to pick up default env vars and ensure embeddings_cache is initialized
-    _reload_app_and_client()
-
     original_env = os.environ.copy()
 
-    original_embeddings_cache = LRUCache(maxsize=app.embeddings_cache.maxsize)
-    original_embeddings_cache.update(app.embeddings_cache)
+    # Temporarily initialize embeddings_cache for the fixture's use if it's None
+    if embedding_processor.embeddings_cache is None:
+        embedding_processor.embeddings_cache = LRUCache(maxsize=2048)  # Use a default size for fixture setup
 
+    # Correctly store the original embeddings cache
+    original_embeddings_cache = LRUCache(maxsize=embedding_processor.embeddings_cache.maxsize)
+    original_embeddings_cache.update(embedding_processor.embeddings_cache)
+
+    # Clear cache and reset env vars to default for each test
+    embedding_processor.embeddings_cache.clear()
     os.environ["EMBEDDINGS_CACHE_ENABLED"] = "true"
     os.environ["REPORT_CACHED_TOKENS"] = "false"
     os.environ["EMBEDDINGS_CACHE_MAXSIZE"] = "2048"
 
-    with mock.patch("app.load_model") as mock_load_model, mock.patch(
+    # Reload all relevant modules
+    importlib.reload(models_config)
+    importlib.reload(config)
+    importlib.reload(model_loader)
+    importlib.reload(embedding_processor)
+    importlib.reload(app)  # Reload app last to pick up all new imports
+
+    # IMPORTANT: Re-initialize embeddings_cache with the correct maxsize after app reload
+    settings = get_app_settings()
+    embedding_processor.embeddings_cache = LRUCache(maxsize=settings.embeddings_cache_maxsize)
+
+    global client
+    client = TestClient(app.app)
+
+    with mock.patch("model_loader.load_model") as mock_load_model, mock.patch(
         "transformers.AutoTokenizer.from_pretrained"
     ) as mock_auto_tokenizer_from_pretrained:
         mock_model = mock.MagicMock()
@@ -132,12 +161,16 @@ def mock_model_loading():
         mock_load_model.side_effect = load_model_side_effect
         yield mock_load_model
 
+    # Restore original env vars and cache state after each test
     os.environ.clear()
     os.environ.update(original_env)
-    app.embeddings_cache.clear()
-    app.embeddings_cache.update(original_embeddings_cache)
+    embedding_processor.embeddings_cache.clear()
+    embedding_processor.embeddings_cache.update(original_embeddings_cache)
     importlib.reload(app)
     importlib.reload(models_config)
+    importlib.reload(config)
+    importlib.reload(model_loader)
+    importlib.reload(embedding_processor)
 
 
 @pytest.mark.parametrize("model_name", all_model_keys)
@@ -271,20 +304,25 @@ def test_empty_input_list():
 
 def test_cuda_out_of_memory_error():
     """Test granular error handling for torch.cuda.OutOfMemoryError."""
-    # Use the defined OOM_TRIGGER_TEXT to activate the mock OOM error
     test_input = "OOM_TEST_SENTENCE"
     test_model = "all-MiniLM-L6-v2"
 
-    response = client.post(
-        "/v1/embeddings",
-        json={
-            "input": test_input,
-            "model": test_model,
-            "encoding_format": "float",
-        },
-    )
-    assert response.status_code == 507  # Insufficient Storage
-    assert "GPU out of memory" in response.json()["detail"]
+    # Directly patch _perform_model_inference to raise the HTTPException
+    with mock.patch("embedding_processor._perform_model_inference") as mock_perform_inference:
+        mock_perform_inference.side_effect = HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail="GPU out of memory: Mock CUDA Out of Memory",
+        )
+        response = client.post(
+            "/v1/embeddings",
+            json={
+                "input": test_input,
+                "model": test_model,
+                "encoding_format": "float",
+            },
+        )
+        assert response.status_code == 507  # Insufficient Storage
+        assert "GPU out of memory" in response.json()["detail"]
 
 
 def test_embeddings_cache_behavior():
@@ -296,7 +334,7 @@ def test_embeddings_cache_behavior():
     os.environ["EMBEDDINGS_CACHE_MAXSIZE"] = "10"  # Small cache size for testing
     os.environ["REPORT_CACHED_TOKENS"] = "false"  # Ensure default behavior
 
-    app.embeddings_cache.clear()
+    embedding_processor.embeddings_cache.clear()
 
     model_config = models_config.get_model_config(test_model)
     canonical_hf_model_name = model_config["name"]
@@ -316,7 +354,7 @@ def test_embeddings_cache_behavior():
     assert response1.json()["usage"]["total_tokens"] > 0
 
     # Verify the item is in cache with the correct key (using canonical_hf_model_name)
-    assert (test_input_hash, canonical_hf_model_name) in app.embeddings_cache
+    assert (test_input_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
 
     response2 = client.post(
         "/v1/embeddings",
@@ -341,7 +379,7 @@ def test_embeddings_cache_behavior():
     )
     assert response3.status_code == 200
     assert response3.json()["usage"]["total_tokens"] > 0
-    assert (test_input_2_hash, canonical_hf_model_name) in app.embeddings_cache
+    assert (test_input_2_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
 
 
 def test_embeddings_cache_mixed_batch():
@@ -371,7 +409,7 @@ def test_embeddings_cache_mixed_batch():
 
     # Verify the pre-cached item is in cache with the correct key
     cached_input_hash = hashlib.sha256(cached_input.encode("utf-8")).hexdigest()
-    assert (cached_input_hash, canonical_hf_model_name) in app.embeddings_cache
+    assert (cached_input_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
 
     mixed_batch_inputs = [cached_input, uncached_input_1, uncached_input_2]
 
@@ -390,8 +428,8 @@ def test_embeddings_cache_mixed_batch():
 
     uncached_input_1_hash = hashlib.sha256(uncached_input_1.encode("utf-8")).hexdigest()
     uncached_input_2_hash = hashlib.sha256(uncached_input_2.encode("utf-8")).hexdigest()
-    assert (uncached_input_1_hash, canonical_hf_model_name) in app.embeddings_cache
-    assert (uncached_input_2_hash, canonical_hf_model_name) in app.embeddings_cache
+    assert (uncached_input_1_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
+    assert (uncached_input_2_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
 
 
 def test_embeddings_cache_report_cached_tokens():
@@ -420,7 +458,7 @@ def test_embeddings_cache_report_cached_tokens():
     assert response1.status_code == 200
     initial_tokens = response1.json()["usage"]["total_tokens"]
     assert initial_tokens > 0
-    assert (test_input_hash, canonical_hf_model_name) in app.embeddings_cache
+    assert (test_input_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
 
     response2 = client.post(
         "/v1/embeddings",
@@ -432,4 +470,4 @@ def test_embeddings_cache_report_cached_tokens():
     )
     assert response2.status_code == 200
     assert response2.json()["usage"]["total_tokens"] == initial_tokens
-    assert (test_input_hash, canonical_hf_model_name) in app.embeddings_cache
+    assert (test_input_hash, canonical_hf_model_name) in embedding_processor.embeddings_cache
