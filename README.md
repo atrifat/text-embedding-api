@@ -3,7 +3,7 @@
 ![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)
 [![codecov](https://codecov.io/gh/atrifat/text-embedding-api/branch/main/graph/badge.svg)](https://codecov.io/gh/atrifat/text-embedding-api)
 
-A Text Embedding API server built with FastAPI and Hugging Face Transformers, designed to be compatible with OpenAI's Embeddings API format.
+A Text Embedding API server built with FastAPI and Hugging Face Transformers, designed to be compatible with OpenAI's and Ollama's Embeddings API formats.
 
 ## Features
 
@@ -11,7 +11,7 @@ A Text Embedding API server built with FastAPI and Hugging Face Transformers, de
 - **Hugging Face Transformers Integration**: Supports various pre-trained transformer models for generating embeddings.
 - **Model and Embeddings Caching**: Includes in-memory caches for loaded models, tokenizers, and generated embeddings to help improve response times.
 - **Batch Processing**: Processes multiple text inputs in configurable batches.
-- **OpenAI API Compatibility**: The `/v1/embeddings` endpoint is designed to be compatible with the OpenAI Embeddings API.
+- **OpenAI and Ollama API Compatibility**: The `/v1/embeddings` endpoint is compatible with the OpenAI Embeddings API, and the `/api/embed` endpoint is compatible with the Ollama Embeddings API.
 
 ## Architecture Overview
 
@@ -178,7 +178,7 @@ Or for multiple inputs:
 }
 ```
 
-**Example Response:**
+**Example Response (`/v1/embeddings` - OpenAI-compatible):**
 
 ```json
 {
@@ -194,6 +194,23 @@ Or for multiple inputs:
   "usage": {
     "prompt_tokens": 10,
     "total_tokens": 10
+  }
+}
+```
+
+**Example Response (`/api/embed` - Ollama-compatible):**
+
+```json
+{
+  "embeddings": [
+    [
+      -0.006929283495992422,
+      -0.005336422007530928
+    ]
+  ],
+  "usage": {
+    "promptTokens": 5,
+    "totalTokens": 5
   }
 }
 ```
