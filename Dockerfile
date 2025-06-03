@@ -29,5 +29,7 @@ ENV EMBEDDINGS_CACHE_ENABLED=true
 ENV EMBEDDINGS_CACHE_MAXSIZE=2048
 ENV REPORT_CACHED_TOKENS=false
 
-CMD ["uvicorn", "app:app", "--host", "${APP_HOST}", "--port", "${APP_PORT}"]
-# CMD ["python", "app.py"]
+COPY --chown=user --chmod=755 entrypoint.sh /app/entrypoint.sh
+
+EXPOSE 7860
+ENTRYPOINT ["/app/entrypoint.sh"]
