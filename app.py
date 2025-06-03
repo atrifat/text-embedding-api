@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import List, Union
+from typing import List, Optional, Union
 
 import uvicorn
 from cachetools import LRUCache  # Added import for LRUCache
@@ -147,6 +147,16 @@ class EmbeddingResponse(BaseModel):
     usage: dict
 
 
+class OllamaEmbeddingResponse(BaseModel):
+    """
+    Represents the response containing a list of embedding vectors in Ollama's format,
+    with an optional usage field.
+    """
+
+    embeddings: List[List[float]]
+    usage: Optional[dict] = {}
+
+
 class ModelObject(BaseModel):
     """
     Represents a single model object in the list of models.
@@ -214,59 +224,71 @@ async def get_model(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
 
-@app.post("/api/embed", response_model=EmbeddingResponse)  # Route for compatibility with Ollama's API
-@app.post("/v1/embeddings", response_model=EmbeddingResponse)  # Route for compatibility with OpenAI's API
-async def create_embeddings(request: EmbeddingRequest, settings: AppSettings = Depends(get_app_settings)):
+@app.post("/api/embed", response_model=OllamaEmbeddingResponse)  # Updated response_model
+@app.post("/v1/embeddings", response_model=EmbeddingResponse)
+async def create_embeddings(
+    embedding_request: EmbeddingRequest,
+    request: Request,  # Inject the FastAPI Request object
+    settings: AppSettings = Depends(get_app_settings),
+):
     """
     Generates embeddings for the given input text(s) using batch processing.
-    Compatible with OpenAI's Embeddings API format.
+    Compatible with OpenAI's Embeddings API format for /v1/embeddings and
+    Ollama's API format for /api/embed.
     The input can be a single string or a list of strings.
     Returns a list of embedding objects, each containing the embedding vector.
     """
     try:
         start_time = time.time()
 
-        if isinstance(request.input, str):
-            texts = [request.input]
+        if isinstance(embedding_request.input, str):
+            texts = [embedding_request.input]
         else:
-            texts = request.input
+            texts = embedding_request.input
 
         if not texts:
-            return EmbeddingResponse(
-                data=[],
-                model=request.model,
-                object="list",
-                usage={"prompt_tokens": 0, "total_tokens": 0},
-            )
+            # Handle empty input for both response types
+            if request.url.path == "/api/embed":
+                return OllamaEmbeddingResponse(embeddings=[], usage={"promptTokens": 0, "totalTokens": 0})
+            else:  # Default to OpenAI format for /v1/embeddings
+                return EmbeddingResponse(
+                    data=[],
+                    model=embedding_request.model,
+                    object="list",
+                    usage={"prompt_tokens": 0, "total_tokens": 0},
+                )
 
-        embeddings_tensor, total_tokens = await get_embeddings_batch(texts, request.model, settings)
+        embeddings_tensor, total_tokens = await get_embeddings_batch(texts, embedding_request.model, settings)
 
-        data = [EmbeddingObject(embedding=embeddings_tensor[i].tolist(), index=i) for i in range(len(texts))]
+        if request.url.path == "/api/embed":
+            # Construct Ollama-like response
+            usage_data = {"promptTokens": total_tokens, "totalTokens": total_tokens}
+            return OllamaEmbeddingResponse(embeddings=embeddings_tensor.tolist(), usage=usage_data)
+        else:
+            # Construct OpenAI-like response
+            data = [EmbeddingObject(embedding=embeddings_tensor[i].tolist(), index=i) for i in range(len(texts))]
+            usage = {
+                "prompt_tokens": total_tokens,
+                "total_tokens": total_tokens,
+            }
+            end_time = time.time()
+            processing_time = end_time - start_time
 
-        usage = {
-            "prompt_tokens": total_tokens,
-            "total_tokens": total_tokens,
-        }
-
-        end_time = time.time()
-        processing_time = end_time - start_time
-
-        if settings.environment != "production":
-            logger.debug(
-                f"Processed {len(texts)} inputs in {processing_time:.4f} seconds. "
-                f"Model: {request.model}. Tokens: {total_tokens}."
-            )
-
-        return EmbeddingResponse(data=data, model=request.model, object="list", usage=usage)
+            if settings.environment != "production":
+                logger.debug(
+                    f"Processed {len(texts)} inputs in {processing_time:.4f} seconds. "
+                    f"Model: {embedding_request.model}. Tokens: {total_tokens}."
+                )
+            return EmbeddingResponse(data=data, model=embedding_request.model, object="list", usage=usage)
 
     except ValueError as e:
-        logger.error(f"Validation error in /v1/embeddings: {e}", exc_info=True)
+        logger.error(f"Validation error in embeddings endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=422, detail=str(e))
     except HTTPException as e:
-        logger.error(f"HTTPException in /v1/embeddings: {e.detail}", exc_info=True)
+        logger.error(f"HTTPException in embeddings endpoint: {e.detail}", exc_info=True)
         raise e
     except Exception as e:
-        logger.error(f"Unhandled error in /v1/embeddings: {e}", exc_info=True)
+        logger.error(f"Unhandled error in embeddings endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
