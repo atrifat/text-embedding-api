@@ -221,6 +221,70 @@ def test_create_embeddings_batch_input(model_name):
         assert embedding_obj["index"] == idx
 
 
+@pytest.mark.parametrize("model_name", all_model_keys)
+def test_create_embeddings_ollama_output(model_name):
+    """Test embedding generation with Ollama-like output for /api/embed."""
+    test_inputs = [
+        "This is a test sentence for Ollama.",
+        "Another sentence for Ollama output.",
+    ]
+
+    response = client.post(
+        "/api/embed",  # Target the Ollama-compatible endpoint
+        json={
+            "input": test_inputs,
+            "model": model_name,
+            "encoding_format": "float",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Assert Ollama-like structure
+    assert "embeddings" in data
+    assert isinstance(data["embeddings"], list)
+    assert len(data["embeddings"]) == len(test_inputs)
+
+    expected_dimension = models_config.get_model_config(model_name)["dimension"]
+
+    for embedding_list in data["embeddings"]:
+        assert isinstance(embedding_list, list)
+        assert len(embedding_list) == expected_dimension
+
+    # Ollama format now includes 'usage' at the top level
+    assert "usage" in data
+    assert "promptTokens" in data["usage"]
+    assert "totalTokens" in data["usage"]
+    assert data["usage"]["promptTokens"] >= 0
+    assert data["usage"]["totalTokens"] >= 0
+
+    # Ollama format does not include 'model' or 'object' at the top level
+    assert "model" not in data
+    assert "object" not in data
+
+
+def test_empty_input_list_ollama_output():
+    """Test handling of empty input list for /api/embed."""
+    response = client.post(
+        "/api/embed",
+        json={
+            "input": [],
+            "model": "text-embedding-3-small",
+            "encoding_format": "float",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "embeddings" in data
+    assert isinstance(data["embeddings"], list)
+    assert len(data["embeddings"]) == 0
+    assert "usage" in data
+    assert data["usage"]["promptTokens"] == 0
+    assert data["usage"]["totalTokens"] == 0
+    assert "model" not in data
+    assert "object" not in data
+
+
 def test_nomic_embed_text_instruction_prefix():
     """Test that nomic-embed-text-v1.5 correctly applies the default instruction prefix."""
     model_name = "nomic-embed-text-v1.5"
