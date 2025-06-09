@@ -69,6 +69,7 @@ def set_env_vars(request):
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "set_env_vars",
     [
@@ -95,7 +96,7 @@ async def test_lifespan_initialization_and_warmup(set_env_vars):
 
 
 @pytest.mark.integration
-@pytest.mark.integration
+@pytest.mark.asyncio
 @pytest.mark.parametrize("set_env_vars", [{"WARMUP_ENABLED": "false"}], indirect=True)
 async def test_lifespan_no_warmup_when_disabled(set_env_vars):
     """
@@ -107,6 +108,7 @@ async def test_lifespan_no_warmup_when_disabled(set_env_vars):
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "set_env_vars", [{"DEFAULT_MODEL": "nonexistent-model", "WARMUP_ENABLED": "true"}], indirect=True
 )
@@ -120,6 +122,7 @@ async def test_lifespan_default_model_not_found_error(set_env_vars):
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio
 async def test_lifespan_no_env_vars_set(set_env_vars):  # Use set_env_vars without param to cover else branch
     """
     Test that the lifespan context manager works correctly when no environment variables
@@ -135,6 +138,7 @@ async def test_lifespan_no_env_vars_set(set_env_vars):  # Use set_env_vars witho
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "set_env_vars", [{"DEFAULT_MODEL": "all-MiniLM-L6-v2", "WARMUP_ENABLED": "true"}], indirect=True
 )
