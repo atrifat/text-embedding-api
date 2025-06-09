@@ -84,9 +84,9 @@ def _perform_model_inference(
             return_tensors="pt",
         )
 
-        individual_tokens_in_batch = [int(torch.sum(mask).item()) for mask in batch_dict["attention_mask"]]
+        individual_tokens_in_batch = [int(torch.sum(mask).item()) for mask in batch_dict.attention_mask]
 
-        prompt_tokens_current_batch = int(torch.sum(batch_dict["attention_mask"]).item())
+        prompt_tokens_current_batch = int(torch.sum(batch_dict.attention_mask).item())
 
         batch_dict = {k: v.to(DEVICE) for k, v in batch_dict.items()}
 
@@ -96,7 +96,6 @@ def _perform_model_inference(
         embeddings = outputs.last_hidden_state[:, 0]
         embeddings = embeddings[:, :model_dimension]
         embeddings = F.normalize(embeddings, p=2, dim=1)
-
         return embeddings, individual_tokens_in_batch, prompt_tokens_current_batch
     except torch.cuda.OutOfMemoryError as e:
         logger.error(
@@ -188,6 +187,11 @@ async def get_embeddings_batch(texts: List[str], model_name: str, settings: AppS
                 final_ordered_embeddings,
                 settings,
             )
+
+    # If no texts were processed by the model and no cached embeddings were found,
+    # return an empty tensor with the correct dimension.
+    if not any(e is not None for e in final_ordered_embeddings):
+        return torch.empty(0, model_dimension), 0
 
     final_embeddings_tensor = torch.cat([e for e in final_ordered_embeddings if e is not None], dim=0)
     return final_embeddings_tensor, total_prompt_tokens
