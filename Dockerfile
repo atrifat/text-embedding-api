@@ -15,6 +15,7 @@ COPY --chown=user ./requirements.txt requirements.txt
 RUN --mount=type=cache,target=/home/user/.cache/pip pip install --upgrade -r requirements.txt
 
 COPY --chown=user . /app
+COPY --chown=user ./static /app/static
 
 ENV APP_PORT=7860
 ENV APP_HOST="0.0.0.0"
