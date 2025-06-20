@@ -273,6 +273,7 @@ The CI workflow is defined in [`python-ci.yml`](.github/workflows/python-ci.yml)
 *   **Linting**: Runs `flake8` to enforce code style and identify errors.
 *   **Testing**: Executes unit and integration tests using `pytest` and generates a code coverage report.
 *   **Security Scan**: Performs a security audit of project dependencies using `pip-audit`.
+*   **Docker Image Build**: Automates the building and pushing of Docker images to GitHub Container Registry (GHCR).
 
 ## 📄 License
 
