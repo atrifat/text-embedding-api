@@ -1,6 +1,11 @@
 name: Build & Push Docker Image
 
 on:
+  push:
+    branches: ["main", "dev"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
   workflow_run:
     workflows: ["Python CI"]
     types: [completed]
