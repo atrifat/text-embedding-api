@@ -4,18 +4,21 @@ CANONICAL_MODELS = {
     "all-MiniLM-L6-v2": {
         "name": "sentence-transformers/all-MiniLM-L6-v2",
         "dimension": 384,
+        "pooling_strategy": "mean",
         "requires_remote_code": False,
         "max_tokens": 512,
     },
     "gte-multilingual-base": {
         "name": "Alibaba-NLP/gte-multilingual-base",
         "dimension": 768,
+        "pooling_strategy": "cls",
         "requires_remote_code": True,
         "max_tokens": 8192,
     },
     "nomic-embed-text-v1.5": {
         "name": "nomic-ai/nomic-embed-text-v1.5",
         "dimension": 768,
+        "pooling_strategy": "mean",
         "requires_remote_code": True,
         "max_tokens": 8192,
         "instruction_prefix_required": True,
@@ -30,6 +33,7 @@ CANONICAL_MODELS = {
     "all-mpnet-base-v2": {
         "name": "sentence-transformers/all-mpnet-base-v2",
         "dimension": 768,
+        "pooling_strategy": "mean",
         "requires_remote_code": False,
         "max_tokens": 384,
     },

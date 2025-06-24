@@ -15,11 +15,17 @@ def reset_app_settings():
     original_env = os.environ.copy()
     # Clear the lru_cache for get_app_settings
     get_app_settings.cache_clear()
+
+    # Explicitly set DEFAULT_MODEL for test_config.py's expectations
+    os.environ["DEFAULT_MODEL"] = "text-embedding-3-large"
+    # Reload config module to ensure AppSettings picks up the explicitly set env var
+    importlib.reload(config)
+
     yield
     # Restore original environment variables
     os.environ.clear()
     os.environ.update(original_env)
-    # Reload config module to ensure AppSettings picks up restored env vars
+    # Reload config module to ensure AppSettings picks up restored env vars for subsequent tests
     importlib.reload(config)
     # Clear the lru_cache again to ensure clean state for subsequent tests
     get_app_settings.cache_clear()

@@ -122,13 +122,13 @@ def mock_embedding_generation():
         # Mock _perform_model_inference to return predictable values for token counts
         with mock.patch("embedding_processor._perform_model_inference") as mock_perform_inference:
 
-            def side_effect_perform_inference(
-                texts_to_tokenize, model, tokenizer, model_max_tokens, model_dimension, settings
-            ):
+            def side_effect_perform_inference(texts_to_tokenize, _model, _tokenizer, model_config, _settings):
+                # Retrieve model_dimension from model_config
+                model_dimension = model_config["dimension"]
                 # Simulate 3 tokens per input text
                 individual_tokens = [3] * len(texts_to_tokenize)
                 total_tokens = sum(individual_tokens)
-                # Create dummy embeddings of the correct dimension (e.g., 384 for common models)
+                # Create dummy embeddings of the correct dimension
                 dummy_embeddings = torch.randn(len(texts_to_tokenize), model_dimension)
                 return dummy_embeddings, individual_tokens, total_tokens
 
