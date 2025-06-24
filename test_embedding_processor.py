@@ -4,6 +4,7 @@ from unittest import mock
 
 import pytest
 import torch
+import torch.nn.functional as F
 from cachetools import LRUCache
 from fastapi import HTTPException
 from starlette import status
@@ -78,16 +79,22 @@ def reset_embedding_processor_state():
             if (input_ids == 999).any():
                 raise torch.cuda.OutOfMemoryError("Mock CUDA Out of Memory")
 
-            # Always return a MockModelOutput with a fixed tensor for testing purposes
-            return MockModelOutput(
-                last_hidden_state=torch.randn(input_ids.size(0), 10, 384)  # Use input_ids.size(0) for batch_size
-            )
+            # Simulate last_hidden_state with distinct values for CLS and mean pooling
+            batch_size, seq_len = input_ids.shape
+            # For CLS, make the first token's hidden state distinct
+            # For mean, make all hidden states contribute to a predictable mean
+            hidden_state = torch.ones(batch_size, seq_len, mock_model.dimension) * 0.1
+            # Make CLS token (index 0) unique for CLS pooling tests
+            hidden_state[:, 0, :] = 0.5
+
+            return MockModelOutput(last_hidden_state=hidden_state.to(model_loader.DEVICE))  # Move to device
 
         mock_model.side_effect = mock_model_call_side_effect
 
         async def load_model_side_effect(model_name: str):
             cfg = models_config.get_model_config(model_name)
             mock_model.dimension = cfg["dimension"]
+            mock_model.pooling_strategy = cfg.get("pooling_strategy", "cls")  # Pass pooling strategy to mock
             return mock_model, mock_tokenizer
 
         mock_load_model.side_effect = load_model_side_effect
@@ -108,7 +115,6 @@ def reset_embedding_processor_state():
                 with mock.patch("transformers.AutoModel.from_pretrained") as mock_auto_model, mock.patch(
                     "transformers.AutoTokenizer.from_pretrained"
                 ) as mock_auto_tokenizer:
-
                     mock_auto_model.return_value = mock_model  # Ensure AutoModel returns our mock
                     mock_auto_tokenizer.return_value = mock_tokenizer  # Ensure AutoTokenizer returns our mock
 
@@ -202,26 +208,47 @@ def test_apply_instruction_prefix_not_required(reset_embedding_processor_state):
 
 
 @pytest.mark.unit
-def test_perform_model_inference_success(reset_embedding_processor_state):
-    """Test successful model inference."""
-    settings, mock_model, mock_tokenizer, _ = reset_embedding_processor_state
+@pytest.mark.parametrize(
+    "model_name, expected_pooling_strategy",
+    [
+        ("all-MiniLM-L6-v2", "mean"),
+        ("gte-multilingual-base", "cls"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_perform_model_inference_success_with_pooling(
+    reset_embedding_processor_state, model_name, expected_pooling_strategy
+):
+    """Test successful model inference with different pooling strategies."""
+    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
 
     test_texts = ["Hello world.", "Test sentence."]
-    model_max_tokens = 512
-    model_dimension = 384  # Matches mock model output
+    model_config = models_config.get_model_config(model_name)
+    model_dimension = model_config["dimension"]
 
-    # Mock tokenizer to return predictable token counts
+    # Manually load model and tokenizer mocks to ensure pooling_strategy is set
+    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
+    mock_model.dimension = model_dimension  # Ensure mock model has correct dimension
+    mock_model.pooling_strategy = expected_pooling_strategy  # Set pooling strategy for mock
+
+    # Mock tokenizer to return predictable token counts and attention mask
     mock_tokenizer.side_effect = lambda texts, **kwargs: MockBatchEncoding(
         input_ids=torch.tensor([[1, 2, 3], [4, 5, 6]]), attention_mask=torch.tensor([[1, 1, 1], [1, 1, 1]])
     )
 
-    # Mock model to return predictable embeddings
-    mock_model.side_effect = lambda **batch_dict: MockModelOutput(
-        last_hidden_state=torch.randn(len(test_texts), 10, model_dimension)
-    )
+    # Mock model to return predictable hidden states for pooling verification
+    def mock_model_call_side_effect_for_pooling(**batch_dict):
+        batch_size, seq_len = batch_dict["input_ids"].shape
+        # Create a hidden state where CLS token is 0.5 and others are 0.1
+        hidden_state = torch.ones(batch_size, seq_len, model_dimension) * 0.1
+        hidden_state[:, 0, :] = 0.5  # CLS token
+
+        return MockModelOutput(last_hidden_state=hidden_state.to(model_loader.DEVICE))
+
+    mock_model.side_effect = mock_model_call_side_effect_for_pooling
 
     embeddings, individual_tokens, total_tokens = embedding_processor._perform_model_inference(
-        test_texts, mock_model, mock_tokenizer, model_max_tokens, model_dimension, settings
+        test_texts, model_instance, tokenizer_instance, model_config, settings  # Pass model_config
     )
 
     assert isinstance(embeddings, torch.Tensor)
@@ -231,23 +258,40 @@ def test_perform_model_inference_success(reset_embedding_processor_state):
     mock_tokenizer.assert_called_once()
     mock_model.assert_called_once()
 
+    # Verify pooling strategy
+    if expected_pooling_strategy == "cls":
+        # For CLS pooling, the embedding should be the normalized CLS token (0.5)
+        expected_embedding = F.normalize(torch.full((1, model_dimension), 0.5), p=2, dim=1).to(model_loader.DEVICE)
+        assert torch.allclose(embeddings[0], expected_embedding.squeeze(0), atol=1e-6)
+    elif expected_pooling_strategy == "mean":
+        # For Mean pooling, the embedding should be the normalized mean of (0.5 + 0.1 + 0.1) / 3
+        # Assuming attention mask is all ones, mean of [0.5, 0.1, 0.1] is (0.5+0.1+0.1)/3 = 0.7/3 = 0.2333...
+        expected_mean_value = (0.5 + 0.1 + 0.1) / 3.0
+        expected_embedding = F.normalize(torch.full((1, model_dimension), expected_mean_value), p=2, dim=1).to(
+            model_loader.DEVICE
+        )
+        assert torch.allclose(embeddings[0], expected_embedding.squeeze(0), atol=1e-6)
+
 
 @pytest.mark.unit
-def test_perform_model_inference_cuda_oom_error(reset_embedding_processor_state):
+@pytest.mark.asyncio
+async def test_perform_model_inference_cuda_oom_error(reset_embedding_processor_state):
     """Test _perform_model_inference handling of CUDA Out of Memory error."""
-    settings, mock_model, mock_tokenizer, _ = reset_embedding_processor_state
+    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
     settings.cuda_cache_clear_enabled = True  # Ensure finally block is tested
 
     test_texts = ["OOM_TEST_SENTENCE"]  # This text triggers OOM in the mock
-    model_max_tokens = 512
-    model_dimension = 384
+    model_name = "all-MiniLM-L6-v2"
+    model_config = models_config.get_model_config(model_name)
+
+    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
 
     # Mock torch.cuda.empty_cache to check if it's called
     with mock.patch("torch.cuda.empty_cache") as mock_empty_cache:
         with mock.patch("torch.cuda.is_available", return_value=True):  # Simulate CUDA available
             with pytest.raises(HTTPException) as exc_info:
-                embedding_processor._perform_model_inference(
-                    test_texts, mock_model, mock_tokenizer, model_max_tokens, model_dimension, settings
+                await embedding_processor._perform_model_inference(
+                    test_texts, model_instance, tokenizer_instance, model_config, settings
                 )
             assert exc_info.value.status_code == status.HTTP_507_INSUFFICIENT_STORAGE
             assert "GPU out of memory" in exc_info.value.detail
@@ -255,19 +299,22 @@ def test_perform_model_inference_cuda_oom_error(reset_embedding_processor_state)
 
 
 @pytest.mark.unit
-def test_perform_model_inference_general_exception(reset_embedding_processor_state):
+@pytest.mark.asyncio
+async def test_perform_model_inference_general_exception(reset_embedding_processor_state):
     """Test _perform_model_inference handling of a general unexpected exception."""
-    settings, mock_model, mock_tokenizer, _ = reset_embedding_processor_state
+    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
 
     test_texts = ["Some text."]
-    model_max_tokens = 512
-    model_dimension = 384
+    model_name = "all-MiniLM-L6-v2"
+    model_config = models_config.get_model_config(model_name)
+
+    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
 
     mock_tokenizer.side_effect = Exception("Tokenizer error")  # Simulate an unexpected error
 
     with pytest.raises(HTTPException) as exc_info:
-        embedding_processor._perform_model_inference(
-            test_texts, mock_model, mock_tokenizer, model_max_tokens, model_dimension, settings
+        await embedding_processor._perform_model_inference(
+            test_texts, model_instance, tokenizer_instance, model_config, settings
         )
     assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
     assert "Internal server error" in exc_info.value.detail
@@ -338,8 +385,9 @@ async def test_get_embeddings_batch_full_flow(reset_embedding_processor_state):
     with mock.patch("embedding_processor._perform_model_inference") as mock_perform_inference:
 
         def side_effect_perform_inference(
-            texts_to_tokenize, model, tokenizer, model_max_tokens, model_dimension, settings
+            texts_to_tokenize, model, tokenizer, model_config, settings  # Updated parameters
         ):
+            model_dimension = model_config["dimension"]  # Get dimension from model_config
             # Simulate 3 tokens per input text
             individual_tokens = [3] * len(texts_to_tokenize)
             total_tokens = sum(individual_tokens)
@@ -469,8 +517,6 @@ async def test_perform_model_inference_oom_direct(reset_embedding_processor_stat
     oom_text = "OOM_TEST_SENTENCE"
     model_name = "all-MiniLM-L6-v2"
     model_config = models_config.get_model_config(model_name)
-    model_dimension = model_config["dimension"]
-    model_max_tokens = model_config.get("max_tokens", 8192)
 
     # Ensure model and tokenizer are not pre-loaded in embedding_processor
     embedding_processor.current_model = None
@@ -482,8 +528,8 @@ async def test_perform_model_inference_oom_direct(reset_embedding_processor_stat
     with mock.patch("torch.cuda.empty_cache"):
         with mock.patch("torch.cuda.is_available", return_value=False):  # Force CPU to avoid real OOM interference
             with pytest.raises(HTTPException) as exc_info:
-                embedding_processor._perform_model_inference(
-                    [oom_text], model_instance, tokenizer_instance, model_max_tokens, model_dimension, settings
+                await embedding_processor._perform_model_inference(
+                    [oom_text], model_instance, tokenizer_instance, model_config, settings
                 )
 
             assert exc_info.value.status_code == status.HTTP_507_INSUFFICIENT_STORAGE
@@ -491,6 +537,40 @@ async def test_perform_model_inference_oom_direct(reset_embedding_processor_stat
     # For a direct OOM test, the tokenizer should be called once.
     assert mock_tokenizer.call_count == 1
     assert mock_model.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_embeddings_batch_asyncio_to_thread_called(reset_embedding_processor_state):
+    """Test that asyncio.to_thread is called within get_embeddings_batch."""
+    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
+    model_name = "all-MiniLM-L6-v2"
+    test_texts = ["Test text for to_thread."]
+
+    # Manually load model and tokenizer mocks to ensure pooling_strategy is set
+    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
+
+    # Mock asyncio.to_thread
+    with mock.patch("asyncio.to_thread", new_callable=mock.AsyncMock) as mock_to_thread:
+        # Configure the mock to return a dummy result that matches the expected return of _perform_model_inference
+        mock_to_thread.return_value = (
+            torch.randn(1, models_config.get_model_config(model_name)["dimension"]),  # embeddings
+            [5],  # individual_tokens_in_batch
+            5,  # prompt_tokens_current_batch
+        )
+
+        await embedding_processor.get_embeddings_batch(test_texts, model_name, settings)
+
+        # Assert that asyncio.to_thread was called
+        mock_to_thread.assert_called_once()
+        # Verify arguments passed to asyncio.to_thread
+        args, kwargs = mock_to_thread.call_args
+        assert args[0] == embedding_processor._perform_model_inference
+        assert args[1] == test_texts
+        assert args[2] == model_instance
+        assert args[3] == tokenizer_instance
+        assert args[4] == models_config.get_model_config(model_name)  # model_config
+        assert args[5] == settings
 
 
 @pytest.mark.asyncio
