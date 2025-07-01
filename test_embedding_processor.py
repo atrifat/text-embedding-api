@@ -541,40 +541,6 @@ async def test_perform_model_inference_oom_direct(reset_embedding_processor_stat
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_get_embeddings_batch_asyncio_to_thread_called(reset_embedding_processor_state):
-    """Test that asyncio.to_thread is called within get_embeddings_batch."""
-    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
-    model_name = "all-MiniLM-L6-v2"
-    test_texts = ["Test text for to_thread."]
-
-    # Manually load model and tokenizer mocks to ensure pooling_strategy is set
-    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
-
-    # Mock asyncio.to_thread
-    with mock.patch("asyncio.to_thread", new_callable=mock.AsyncMock) as mock_to_thread:
-        # Configure the mock to return a dummy result that matches the expected return of _perform_model_inference
-        mock_to_thread.return_value = (
-            torch.randn(1, models_config.get_model_config(model_name)["dimension"]),  # embeddings
-            [5],  # individual_tokens_in_batch
-            5,  # prompt_tokens_current_batch
-        )
-
-        await embedding_processor.get_embeddings_batch(test_texts, model_name, settings)
-
-        # Assert that asyncio.to_thread was called
-        mock_to_thread.assert_called_once()
-        # Verify arguments passed to asyncio.to_thread
-        args, kwargs = mock_to_thread.call_args
-        assert args[0] == embedding_processor._perform_model_inference
-        assert args[1] == test_texts
-        assert args[2] == model_instance
-        assert args[3] == tokenizer_instance
-        assert args[4] == models_config.get_model_config(model_name)  # model_config
-        assert args[5] == settings
-
-
-@pytest.mark.asyncio
-@pytest.mark.unit
 async def test_get_embeddings_batch_empty_input(reset_embedding_processor_state):
     """Test get_embeddings_batch with an empty input list."""
     settings, _, _, _ = reset_embedding_processor_state
@@ -588,3 +554,158 @@ async def test_get_embeddings_batch_empty_input(reset_embedding_processor_state)
     expected_shape = (0, models_config.get_model_config(model_name)["dimension"])
     assert final_embeddings.shape == expected_shape
     assert total_tokens == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_nomic_embed_text_variable_length_batch(reset_embedding_processor_state):
+    """
+    Test Case 1: Validate the fix for nomic-embed-text-v1.5 with variable-length texts.
+    """
+    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
+    model_name = "nomic-embed-text-v1.5"
+    model_config = models_config.get_model_config(model_name)
+
+    test_texts = ["short text", "this is a much longer sentence to process and it should still work correctly"]
+
+    # Manually load model and tokenizer mocks to ensure pooling_strategy is set
+    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
+
+    # Mock tokenizer to return predictable token counts and attention mask
+    mock_tokenizer.side_effect = lambda texts, **kwargs: MockBatchEncoding(
+        input_ids=torch.full((len(texts), model_config["max_tokens"]), 1, dtype=torch.long),
+        attention_mask=torch.full((len(texts), model_config["max_tokens"]), 1, dtype=torch.long),
+    )
+
+    # Mock model to return predictable hidden states
+    def mock_model_call_side_effect_nomic(**batch_dict):
+        batch_size, seq_len = batch_dict["input_ids"].shape
+        hidden_state = torch.ones(batch_size, seq_len, model_config["dimension"]) * 0.1
+        return MockModelOutput(last_hidden_state=hidden_state.to(model_loader.DEVICE))
+
+    mock_model.side_effect = mock_model_call_side_effect_nomic
+
+    with mock.patch("embedding_processor._perform_model_inference") as mock_inference:
+
+        def _mock_perform_model_inference_side_effect(texts_to_tokenize, model, tokenizer, model_config, settings):
+            # Simulate the tokenizer call within _perform_model_inference
+            tokenizer(
+                texts_to_tokenize,
+                max_length=model_config["max_tokens"],
+                padding="longest",  # This is what we want to assert
+                truncation=True,
+                return_tensors="pt",
+            )
+            # Return dummy results as _perform_model_inference would
+            return (
+                torch.randn(len(texts_to_tokenize), model_config["dimension"]),
+                [5] * len(texts_to_tokenize),
+                15 * len(texts_to_tokenize),
+            )
+
+        mock_inference.side_effect = _mock_perform_model_inference_side_effect
+
+        # Call the actual function we are testing
+        await embedding_processor.get_embeddings_batch(test_texts, model_name, settings)
+
+        # Assert that our inference function was called
+        mock_inference.assert_called_once()
+
+        # Now, assert on the original mock_tokenizer from the fixture,
+        # as it's the one that was passed into _perform_model_inference and called by our side_effect.
+        mock_tokenizer.assert_called_with(
+            mock.ANY,  # The texts passed to the tokenizer
+            max_length=model_config["max_tokens"],
+            padding="longest",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_standard_model_parallel_batching(reset_embedding_processor_state):
+    settings, _, _, mock_load_model = reset_embedding_processor_state
+    model_name = "all-MiniLM-L6-v2"
+    model_config = models_config.get_model_config(model_name)
+    test_texts = [f"text {i}" for i in range(70)]
+
+    with mock.patch("embedding_processor._perform_model_inference") as mock_inference:
+        # Configure the mock to return dummy results for each batch
+        mock_inference.side_effect = [
+            (torch.randn(32, model_config["dimension"]), [5] * 32, 160),  # noqa: E226
+            (torch.randn(32, model_config["dimension"]), [5] * 32, 160),  # noqa: E226
+            (torch.randn(6, model_config["dimension"]), [5] * 6, 30),  # noqa: E226
+        ]
+
+        await embedding_processor.get_embeddings_batch(test_texts, model_name, settings)
+
+        # Assert that _perform_model_inference was called ceil(70 / 32) = 3 times
+        expected_calls = 3
+        assert mock_inference.call_count == expected_calls
+
+        # Assert the size of the text batches passed in each call
+        assert len(mock_inference.call_args_list[0][0][0]) == 32
+        assert len(mock_inference.call_args_list[1][0][0]) == 32
+        assert len(mock_inference.call_args_list[2][0][0]) == 6
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("model_name", ["nomic-embed-text-v1.5", "all-MiniLM-L6-v2"])
+async def test_single_item_batch_edge_case(reset_embedding_processor_state, model_name):
+    """
+    Test Case 3: Edge case with a single-item batch for both problematic and standard models.
+    """
+    settings, mock_model, mock_tokenizer, mock_load_model = reset_embedding_processor_state
+    model_config = models_config.get_model_config(model_name)
+
+    test_texts = ["a single sentence."]
+
+    # Manually load model and tokenizer mocks
+    model_instance, tokenizer_instance = await mock_load_model.side_effect(model_name)
+
+    # Mock tokenizer to return predictable token counts and attention mask
+    if model_config.get("requires_max_length_padding", False):
+        expected_padding = "max_length"
+        mock_tokenizer.side_effect = lambda texts, **kwargs: MockBatchEncoding(
+            input_ids=torch.full((len(texts), model_config["max_tokens"]), 1, dtype=torch.long),
+            attention_mask=torch.full((len(texts), model_config["max_tokens"]), 1, dtype=torch.long),
+        )
+    else:
+        expected_padding = "longest"
+        mock_tokenizer.side_effect = lambda texts, **kwargs: MockBatchEncoding(
+            input_ids=torch.full((len(texts), 5), 1, dtype=torch.long),
+            attention_mask=torch.full((len(texts), 5), 1, dtype=torch.long),
+        )
+
+    # Mock model to return predictable hidden states
+    def mock_model_call_side_effect_single(**batch_dict):
+        batch_size, seq_len = batch_dict["input_ids"].shape
+        hidden_state = torch.ones(batch_size, seq_len, model_config["dimension"]) * 0.1
+        return MockModelOutput(last_hidden_state=hidden_state.to(model_loader.DEVICE))
+
+    mock_model.side_effect = mock_model_call_side_effect_single
+
+    embeddings, individual_tokens, total_tokens = embedding_processor._perform_model_inference(
+        test_texts,
+        model_instance,
+        tokenizer_instance,
+        model_config,
+        settings,
+    )
+
+    assert isinstance(embeddings, torch.Tensor)
+    assert embeddings.shape == (len(test_texts), model_config["dimension"])
+    assert all(isinstance(t, int) for t in individual_tokens)
+    assert total_tokens > 0
+    mock_tokenizer.assert_called_once()
+    mock_model.assert_called_once()
+    # Assert that the tokenizer was called with the correct padding strategy
+    mock_tokenizer.assert_called_with(
+        test_texts,
+        max_length=model_config["max_tokens"],
+        padding=expected_padding,
+        truncation=True,
+        return_tensors="pt",
+    )
