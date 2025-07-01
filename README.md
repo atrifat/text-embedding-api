@@ -12,7 +12,8 @@ A Text Embedding API server built with FastAPI and Hugging Face Transformers, de
 - 🚀 **FastAPI Backend**: Built with FastAPI, providing an asynchronous API.
 - 🤖 **Hugging Face Transformers Integration**: Supports various pre-trained transformer models for generating embeddings.
 - ⚡ **Model and Embeddings Caching**: Incorporates in-memory caches for loaded models, tokenizers, and generated embeddings to enhance response times.
-- 📦 **Batch Processing**: Supports processing multiple text inputs in configurable batches.
+- 📦 **Batch Processing**: Supports processing multiple text inputs in configurable batches, with model-specific optimizations.
+- ⚙️ **Enhanced Model Compatibility and Processing**: Includes advanced handling for various model requirements, such as specific padding strategies and sequential processing for certain models.
 - 🤝 **OpenAI and Ollama API Compatibility**: The `/v1/embeddings` endpoint is compatible with the OpenAI Embeddings API, and the `/api/embed` endpoint is compatible with the Ollama Embeddings API.
 
 ## 🏗️ Architecture Overview
@@ -87,8 +88,9 @@ DEFAULT_MODEL=text-embedding-3-large
 EMBEDDING_BATCH_SIZE=8
 EMBEDDINGS_CACHE_ENABLED=True
 EMBEDDINGS_CACHE_MAXSIZE=2048
-CUDA_CACHE_CLEAR_ENABLED=True
+CUDA_CACHE_CLEAR_ENABLED=False # Set to True to clear CUDA cache after each inference, potentially reducing memory usage but increasing latency.
 APP_PORT=7860
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True # Optimization for PyTorch to manage CUDA memory more flexibly.
 APP_HOST=0.0.0.0
 ENVIRONMENT=development
 REPORT_CACHED_TOKENS=False
@@ -221,12 +223,12 @@ Or for multiple inputs:
 
 The models configured in `models_config.py` are listed below. Aliases like `text-embedding-3-small` and `text-embedding-3-large` are provided for OpenAI API compatibility; however, the actual embedding dimensions are determined by the underlying Hugging Face models used by this server and may differ from OpenAI's native models.
 
-| Canonical Name          | Alias (OpenAI-compatible)              | Dimension | Max Tokens | Instruction Prefix Required | Default Prefix     |
-| :---------------------- | :------------------------------------- | :-------- | :--------- | :-------------------------- | :----------------- |
-| `all-MiniLM-L6-v2`      | `all-minilm`, `text-embedding-3-small` | 384       | 512        | No                          | -                  |
-| `gte-multilingual-base` | `text-embedding-3-large`               | 768       | 8192       | No                          | -                  |
-| `nomic-embed-text-v1.5` | `nomic-embed-text`                     | 768       | 8192       | Yes                         | `search_document:` |
-| `all-mpnet-base-v2`     | -                                      | 768       | 384        | No                          | -                  |
+| Canonical Name          | Alias (OpenAI-compatible)              | Dimension | Max Tokens | Pooling Strategy | Max Batch Size | Processing Strategy | Requires Max Length Padding | Instruction Prefix Required | Default Prefix     |
+| :---------------------- | :------------------------------------- | :-------- | :--------- | :--------------- | :------------- | :------------------ | :-------------------------- | :-------------------------- | :----------------- |
+| `all-MiniLM-L6-v2`      | `all-minilm`, `text-embedding-3-small` | 384       | 512        | `mean`           | 32             | `parallel`          | No                          | No                          | -                  |
+| `gte-multilingual-base` | `text-embedding-3-large`               | 768       | 8192       | `cls`            | 32             | `parallel`          | No                          | No                          | -                  |
+| `nomic-embed-text-v1.5` | `nomic-embed-text`                     | 768       | 8192       | `mean`           | 8              | `parallel`          | No                          | Yes                         | `search_document:` |
+| `all-mpnet-base-v2`     | -                                      | 768       | 384        | `mean`           | 32             | `parallel`          | No                          | No                          | -                  |
 
 ## 🧑‍💻 Development
 
