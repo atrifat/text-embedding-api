@@ -1,5 +1,4 @@
 # embedding_processor.py
-import asyncio
 import hashlib
 import logging
 from typing import List, Tuple, Union
@@ -79,11 +78,18 @@ def _perform_model_inference(
     try:
         model_max_tokens = model_config.get("max_tokens", 8192)
         model_dimension = model_config["dimension"]
+        pooling_strategy = model_config.get("pooling_strategy", "cls")
+
+        # Determine the correct padding strategy based on the model's needs.
+        if model_config.get("requires_max_length_padding", False):
+            padding_strategy = "max_length"
+        else:
+            padding_strategy = "longest"
 
         batch_dict = tokenizer(
             texts_to_tokenize,
             max_length=model_max_tokens,
-            padding=True,
+            padding=padding_strategy,
             truncation=True,
             return_tensors="pt",
         )
@@ -96,9 +102,6 @@ def _perform_model_inference(
 
         with torch.no_grad():
             outputs = model(**batch_dict)
-
-        # Default to 'cls' if not specified
-        pooling_strategy = model_config.get("pooling_strategy", "cls")
 
         if pooling_strategy == "mean":
             last_hidden = outputs.last_hidden_state
@@ -178,40 +181,61 @@ async def get_embeddings_batch(texts: List[str], model_name: str, settings: AppS
     model, tokenizer = await load_model(model_name)
 
     model_dimension = model_config["dimension"]
-    max_batch_size = settings.embedding_batch_size
+
+    # Use the model-specific batch size from the config, falling back to the global setting.
+    max_batch_size = model_config.get("max_batch_size", settings.embedding_batch_size)
 
     final_ordered_embeddings, total_prompt_tokens, texts_to_process_in_model, original_indices_for_model_output = (
         _process_texts_for_cache_and_batching(texts, model_config, settings)
     )
 
     if texts_to_process_in_model:
-        for i in range(0, len(texts_to_process_in_model), max_batch_size):
-            batch_texts = texts_to_process_in_model[i : i + max_batch_size]
-            batch_original_indices = original_indices_for_model_output[i : i + max_batch_size]
+        processing_strategy = model_config.get("processing_strategy", "parallel")
 
-            texts_to_tokenize = _apply_instruction_prefix(batch_texts, model_config)
+        if processing_strategy == "sequential":
+            # Process texts one by one for models requiring sequential processing (e.g., nomic-embed-text)
+            for i, text_to_process in enumerate(texts_to_process_in_model):
+                original_idx = original_indices_for_model_output[i]
 
-            # Use asyncio.to_thread for the blocking model call
-            embeddings, individual_tokens_in_batch, prompt_tokens_current_batch = await asyncio.to_thread(
-                _perform_model_inference,
-                texts_to_tokenize,
-                model,
-                tokenizer,
-                model_config,
-                settings,
-            )
+                texts_to_tokenize = _apply_instruction_prefix([text_to_process], model_config)
 
-            total_prompt_tokens += prompt_tokens_current_batch
+                embeddings, individual_tokens_in_batch, prompt_tokens_current_batch = _perform_model_inference(
+                    texts_to_tokenize, model, tokenizer, model_config, settings
+                )
 
-            _store_embeddings_in_cache(
-                embeddings,
-                individual_tokens_in_batch,
-                batch_original_indices,
-                texts,
-                model_config,
-                final_ordered_embeddings,
-                settings,
-            )
+                total_prompt_tokens += prompt_tokens_current_batch
+
+                _store_embeddings_in_cache(
+                    embeddings,
+                    individual_tokens_in_batch,
+                    [original_idx],  # Pass single original index
+                    texts,
+                    model_config,
+                    final_ordered_embeddings,
+                    settings,
+                )
+        else:  # Default to parallel batching
+            for i in range(0, len(texts_to_process_in_model), max_batch_size):
+                batch_texts = texts_to_process_in_model[i : i + max_batch_size]
+                batch_original_indices = original_indices_for_model_output[i : i + max_batch_size]
+
+                texts_to_tokenize = _apply_instruction_prefix(batch_texts, model_config)
+
+                embeddings, individual_tokens_in_batch, prompt_tokens_current_batch = _perform_model_inference(
+                    texts_to_tokenize, model, tokenizer, model_config, settings
+                )
+
+                total_prompt_tokens += prompt_tokens_current_batch
+
+                _store_embeddings_in_cache(
+                    embeddings,
+                    individual_tokens_in_batch,
+                    batch_original_indices,
+                    texts,
+                    model_config,
+                    final_ordered_embeddings,
+                    settings,
+                )
 
     # If no texts were processed by the model and no cached embeddings were found,
     # return an empty tensor with the correct dimension.

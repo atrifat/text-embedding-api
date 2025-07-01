@@ -5,6 +5,7 @@ CANONICAL_MODELS = {
         "name": "sentence-transformers/all-MiniLM-L6-v2",
         "dimension": 384,
         "pooling_strategy": "mean",
+        "max_batch_size": 32,  # Example of specific batch size for this model
         "requires_remote_code": False,
         "max_tokens": 512,
     },
@@ -12,6 +13,7 @@ CANONICAL_MODELS = {
         "name": "Alibaba-NLP/gte-multilingual-base",
         "dimension": 768,
         "pooling_strategy": "cls",
+        "max_batch_size": 32,  # Efficient model
         "requires_remote_code": True,
         "max_tokens": 8192,
     },
@@ -19,6 +21,9 @@ CANONICAL_MODELS = {
         "name": "nomic-ai/nomic-embed-text-v1.5",
         "dimension": 768,
         "pooling_strategy": "mean",
+        # "processing_strategy": "sequential",  # Use sequential processing (Disabled for now)
+        "requires_max_length_padding": False,
+        "max_batch_size": 8,  # Example of specific batch size for this model
         "requires_remote_code": True,
         "max_tokens": 8192,
         "instruction_prefix_required": True,
@@ -34,6 +39,7 @@ CANONICAL_MODELS = {
         "name": "sentence-transformers/all-mpnet-base-v2",
         "dimension": 768,
         "pooling_strategy": "mean",
+        "max_batch_size": 32,  # Example of specific batch size for this model
         "requires_remote_code": False,
         "max_tokens": 384,
     },
