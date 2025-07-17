@@ -219,6 +219,47 @@ Or for multiple inputs:
 }
 ```
 
+### 4. List Ollama Models (Tags)
+
+`GET /api/tags`
+
+Returns a list of all embedding models available on the server in an Ollama-compatible format. Note that some fields (e.g., `size`, `digest`, `format`, `quantization_level`) are placeholders as they are not directly available from Hugging Face model metadata.
+
+**Example Response:**
+
+```json
+{
+  "models": [
+    {
+      "name": "text-embedding-3-large",
+      "modified_at": "2024-07-17T11:30:00Z",
+      "size": 100000000,
+      "digest": "placeholder_digest",
+      "details": {
+        "format": "gguf",
+        "family": "gte",
+        "families": ["gte"],
+        "parameter_size": "768D",
+        "quantization_level": "Q8_0"
+      }
+    },
+    {
+      "name": "nomic-embed-text",
+      "modified_at": "2024-07-17T11:30:00Z",
+      "size": 100000000,
+      "digest": "placeholder_digest",
+      "details": {
+        "format": "gguf",
+        "family": "nomic-ai",
+        "families": ["nomic-ai"],
+        "parameter_size": "768D",
+        "quantization_level": "Q8_0"
+      }
+    }
+  ]
+}
+```
+
 ## 📚 Available Models
 
 The models configured in `models_config.py` are listed below. Aliases like `text-embedding-3-small` and `text-embedding-3-large` are provided for OpenAI API compatibility; however, the actual embedding dimensions are determined by the underlying Hugging Face models used by this server and may differ from OpenAI's native models.

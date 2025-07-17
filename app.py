@@ -2,6 +2,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import List, Optional, Union
 
 import uvicorn
@@ -16,7 +17,12 @@ from pydantic import BaseModel, Field, field_validator
 import embedding_processor
 from config import AppSettings, get_app_settings
 from embedding_processor import get_embeddings_batch
-from models_config import CANONICAL_MODELS, MODEL_ALIASES, MODELS
+from models_config import (
+    CANONICAL_MODELS,
+    MODEL_ALIASES,
+    MODELS,
+    get_model_config,
+)
 
 # Suppress a common warning from Hugging Face Tokenizers when processes are forked,
 # which can occur in web servers like FastAPI. This prevents potential deadlocks or runtime warnings.
@@ -177,6 +183,26 @@ class ListModelsResponse(BaseModel):
     object: str = "list"
 
 
+class OllamaModelDetails(BaseModel):
+    format: str = "gguf"  # Placeholder, as HF models are not necessarily GGUF
+    family: str
+    families: List[str]
+    parameter_size: str
+    quantization_level: str
+
+
+class OllamaModelObject(BaseModel):
+    name: str
+    modified_at: str
+    size: int
+    digest: str
+    details: OllamaModelDetails
+
+
+class OllamaTagsResponse(BaseModel):
+    models: List[OllamaModelObject]
+
+
 @app.get("/", response_class=FileResponse)
 async def read_root():
     """
@@ -222,6 +248,43 @@ async def get_model(model_id: str):
         )
     else:
         raise HTTPException(status_code=404, detail="Model not found")
+
+
+@app.get("/api/tags", response_model=OllamaTagsResponse)
+async def list_ollama_models():
+    """
+    Lists the available embedding models in an Ollama-compatible /api/tags format.
+    Note: Some fields like 'size', 'digest', and 'details' are placeholders
+    as they are not directly available from Hugging Face model metadata.
+    """
+    ollama_models_list = []
+    current_time_iso = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"  # For modified_at
+
+    # Iterate through all models (canonical and aliases) from the combined MODELS dictionary
+    # This ensures all supported models are listed without complex de-duplication logic.
+    for model_name_or_alias in MODELS.keys():
+        model_config = get_model_config(model_name_or_alias)  # Use get_model_config to resolve aliases
+
+        family = model_config["name"].split("/")[0] if "/" in model_config["name"] else "unknown"
+        parameter_size = f"{model_config['dimension']}D"
+        quantization_level = "Q8_0"  # Placeholder
+
+        ollama_models_list.append(
+            OllamaModelObject(
+                name=model_name_or_alias,  # Use the name/alias as requested by Ollama format
+                modified_at=current_time_iso,
+                size=100000000,  # Placeholder size (e.g., 100MB)
+                digest="placeholder_digest",
+                details=OllamaModelDetails(
+                    format="gguf",  # Placeholder format
+                    family=family,
+                    families=[family],
+                    parameter_size=parameter_size,
+                    quantization_level=quantization_level,
+                ),
+            )
+        )
+    return OllamaTagsResponse(models=ollama_models_list)
 
 
 @app.post("/api/embed", response_model=OllamaEmbeddingResponse)  # Updated response_model
