@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Union
 
 import uvicorn
@@ -258,7 +258,7 @@ async def list_ollama_models():
     as they are not directly available from Hugging Face model metadata.
     """
     ollama_models_list = []
-    current_time_iso = datetime.now(UTC).isoformat(timespec="seconds") + "Z"  # For modified_at
+    current_time_iso = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"  # For modified_at
 
     # Iterate through all models (canonical and aliases) from the combined MODELS dictionary
     # This ensures all supported models are listed without complex de-duplication logic.
