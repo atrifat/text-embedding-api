@@ -667,6 +667,61 @@ def test_ollama_api_batch_input(model_name):
 
 
 @pytest.mark.integration
+def test_ollama_api_tags_endpoint():
+    """Test the /api/tags endpoint to ensure it returns a list of models in Ollama format."""
+    response = client.get("/api/tags")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "models" in data
+    assert isinstance(data["models"], list)
+    assert len(data["models"]) > 0  # Should contain at least the configured models
+
+    # Get all expected model names (aliases and canonical)
+    expected_model_names = set(models_config.MODELS.keys())
+
+    returned_model_names = set()
+    for model_obj in data["models"]:
+        assert "name" in model_obj
+        assert "modified_at" in model_obj
+        assert "size" in model_obj
+        assert "digest" in model_obj
+        assert "details" in model_obj
+
+        assert isinstance(model_obj["details"], dict)
+        details = model_obj["details"]
+        assert "format" in details
+        assert "family" in details
+        assert "families" in details
+        assert "parameter_size" in details
+        assert "quantization_level" in details
+
+        # Check for placeholder values or inferred structure
+        assert model_obj["modified_at"].endswith("Z") and "T" in model_obj["modified_at"]
+        assert model_obj["size"] == 100000000  # Placeholder size
+        assert model_obj["digest"] == "placeholder_digest"
+        assert details["format"] == "gguf"  # Placeholder format
+        assert isinstance(details["families"], list) and len(details["families"]) > 0
+        assert details["quantization_level"] == "Q8_0"  # Placeholder
+
+        # More specific assertions for inferred values based on models_config
+        model_name_or_alias = model_obj["name"]
+        model_config = models_config.get_model_config(model_name_or_alias)
+
+        expected_family = model_config["name"].split("/")[0] if "/" in model_config["name"] else "unknown"
+        expected_parameter_size = f"{model_config['dimension']}D"
+
+        assert details["family"] == expected_family
+        assert expected_family in details["families"]
+        assert details["parameter_size"] == expected_parameter_size
+
+        returned_model_names.add(model_obj["name"])
+
+    # Verify that all configured models (aliases and canonical) are present in the response
+    assert expected_model_names.issubset(returned_model_names)
+
+
+@pytest.mark.integration
 def test_read_root_endpoint():
     """Test that the root endpoint serves the index.html file."""
     response = client.get("/")
