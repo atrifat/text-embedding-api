@@ -3,25 +3,30 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import List, Optional, Union
 
+import torch
 import uvicorn
-from cachetools import LRUCache  # Added import for LRUCache
+from cachetools import LRUCache
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
 
 import embedding_processor
 from config import AppSettings, get_app_settings
 from embedding_processor import get_embeddings_batch
-from models_config import (
-    CANONICAL_MODELS,
-    MODEL_ALIASES,
-    MODELS,
-    get_model_config,
+from models_config import MODELS, get_model_config
+from response_formatter import format_ollama_response, format_openai_response
+from schemas import (
+    EmbeddingRequest,
+    EmbeddingResponse,
+    ListModelsResponse,
+    ModelObject,
+    OllamaEmbeddingResponse,
+    OllamaModelDetails,
+    OllamaModelObject,
+    OllamaTagsResponse,
 )
 
 # Suppress a common warning from Hugging Face Tokenizers when processes are forked,
@@ -80,127 +85,6 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-class EmbeddingRequest(BaseModel):
-    """
-    Represents a request for generating embeddings.
-
-    Attributes:
-        input (Union[str, List[str]]): The input text to embed, can be a single string or a list of strings.
-        model (str): The name of the model to use for embedding.
-        encoding_format (str): The format of the embeddings. Currently only 'float' is supported.
-    """
-
-    input: Union[str, List[str]] = Field(
-        ...,
-        description="The input text to embed, can be a single string or a list of strings.",
-        json_schema_extra={"example": "This is an example sentence."},
-    )
-    model: str = Field(
-        "text-embedding-3-large",
-        description=(
-            "The name of the model to use for embedding. Supports both original model names "
-            "and OpenAI-compatible names."
-        ),
-        json_schema_extra={"example": "text-embedding-3-large"},
-    )
-    encoding_format: str = Field(
-        "float",
-        description="The format of the embeddings. Currently only 'float' is supported.",
-        json_schema_extra={"example": "float"},
-    )
-
-    @field_validator("model")
-    @classmethod
-    def validate_model(cls, value: str) -> str:
-        if value not in MODELS:
-            valid_models = list(CANONICAL_MODELS.keys()) + list(MODEL_ALIASES.keys())
-            raise ValueError(f"Model must be one of: {', '.join(sorted(valid_models))}")
-        return value
-
-    @field_validator("encoding_format")
-    @classmethod
-    def validate_encoding_format(cls, value: str) -> str:
-        if value != "float":
-            raise ValueError("Only 'float' encoding format is supported")
-        return value
-
-
-class EmbeddingObject(BaseModel):
-    """
-    Represents an embedding object.
-
-    Attributes:
-        object (str): The type of object, which is "embedding".
-        embedding (List[float]): The embedding vector.
-        index (int): The index of the embedding.
-    """
-
-    object: str = "embedding"
-    embedding: List[float]
-    index: int
-
-
-class EmbeddingResponse(BaseModel):
-    """
-    Represents the response containing a list of embedding objects.
-    """
-
-    data: List[EmbeddingObject]
-    model: str
-    object: str = "list"
-    usage: dict
-
-
-class OllamaEmbeddingResponse(BaseModel):
-    """
-    Represents the response containing a list of embedding vectors in Ollama's format,
-    with an optional usage field.
-    """
-
-    embeddings: List[List[float]]
-    usage: Optional[dict] = {}
-
-
-class ModelObject(BaseModel):
-    """
-    Represents a single model object in the list of models.
-    """
-
-    id: str
-    object: str = "model"
-    created: int
-    owned_by: str
-
-
-class ListModelsResponse(BaseModel):
-    """
-    Represents the response containing a list of available models.
-    """
-
-    data: List[ModelObject]
-    object: str = "list"
-
-
-class OllamaModelDetails(BaseModel):
-    format: str = "gguf"  # Placeholder, as HF models are not necessarily GGUF
-    family: str
-    families: List[str]
-    parameter_size: str
-    quantization_level: str
-
-
-class OllamaModelObject(BaseModel):
-    name: str
-    modified_at: str
-    size: int
-    digest: str
-    details: OllamaModelDetails
-
-
-class OllamaTagsResponse(BaseModel):
-    models: List[OllamaModelObject]
 
 
 @app.get("/", response_class=FileResponse)
@@ -287,7 +171,7 @@ async def list_ollama_models():
     return OllamaTagsResponse(models=ollama_models_list)
 
 
-@app.post("/api/embed", response_model=OllamaEmbeddingResponse)  # Updated response_model
+@app.post("/api/embed", response_model=OllamaEmbeddingResponse)
 @app.post("/v1/embeddings", response_model=EmbeddingResponse)
 async def create_embeddings(
     embedding_request: EmbeddingRequest,
@@ -312,28 +196,26 @@ async def create_embeddings(
         if not texts:
             # Handle empty input for both response types
             if request.url.path == "/api/embed":
-                return OllamaEmbeddingResponse(embeddings=[], usage={"promptTokens": 0, "totalTokens": 0})
+                return format_ollama_response(embeddings_tensor=torch.empty(0, 0), total_tokens=0)
             else:  # Default to OpenAI format for /v1/embeddings
-                return EmbeddingResponse(
-                    data=[],
-                    model=embedding_request.model,
-                    object="list",
-                    usage={"prompt_tokens": 0, "total_tokens": 0},
+                return format_openai_response(
+                    embeddings_tensor=torch.empty(0, 0),
+                    total_tokens=0,
+                    texts=[],
+                    model_name=embedding_request.model,
                 )
 
         embeddings_tensor, total_tokens = await get_embeddings_batch(texts, embedding_request.model, settings)
 
         if request.url.path == "/api/embed":
-            # Construct Ollama-like response
-            usage_data = {"promptTokens": total_tokens, "totalTokens": total_tokens}
-            return OllamaEmbeddingResponse(embeddings=embeddings_tensor.tolist(), usage=usage_data)
+            return format_ollama_response(embeddings_tensor=embeddings_tensor, total_tokens=total_tokens)
         else:
-            # Construct OpenAI-like response
-            data = [EmbeddingObject(embedding=embeddings_tensor[i].tolist(), index=i) for i in range(len(texts))]
-            usage = {
-                "prompt_tokens": total_tokens,
-                "total_tokens": total_tokens,
-            }
+            response = format_openai_response(
+                embeddings_tensor=embeddings_tensor,
+                total_tokens=total_tokens,
+                texts=texts,
+                model_name=embedding_request.model,
+            )
             end_time = time.time()
             processing_time = end_time - start_time
 
@@ -342,7 +224,7 @@ async def create_embeddings(
                     f"Processed {len(texts)} inputs in {processing_time:.4f} seconds. "
                     f"Model: {embedding_request.model}. Tokens: {total_tokens}."
                 )
-            return EmbeddingResponse(data=data, model=embedding_request.model, object="list", usage=usage)
+            return response
 
     except ValueError as e:
         logger.error(f"Validation error in embeddings endpoint: {e}", exc_info=True)
